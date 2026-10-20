@@ -1,0 +1,7 @@
+The desktop app translates selected English text into Simplified Chinese. You can keep reading without switching to a chat window.
+
+Before deploying the API, enable TLS and validate the JSON Schema. Set a 30-second timeout and retry only idempotent requests.
+
+Checklist:
+- Keep every paragraph in its original position.
+- Preserve blank lines, product names, and numbers.

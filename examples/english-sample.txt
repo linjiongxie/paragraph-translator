@@ -1,0 +1,1 @@
+Select a paragraph in any app, then press the keyboard shortcut. A small window will appear beside the selected text with the Chinese translation. You can copy the result or press Escape to close the window.
