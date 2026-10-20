@@ -2,14 +2,54 @@
 
 献给被claude爱说英文困扰的AI Native Product Builder们
 
-选中英文，按 **⌥⌘T**，在阅读位置查看中文。用自己的 Codex 登录，支持流式输出，保留段落、列表和加粗，译文为 15pt。
+一个 macOS 菜单栏翻译小工具。选中英文，按 **⌥⌘T**，在阅读位置查看整段中文，适合阅读 Claude 等 AI 工具的英文回复、技术说明和表格。
 
-**v0.1.1-preview 新增 Markdown 表格**：逐单元格翻译，保留行列、数字、对齐与行内格式；窗口可拖动边缘或右下角手柄缩放，方便阅读大表格。
+使用你自己电脑上的 Codex CLI、ChatGPT/Codex 登录和账号额度。当前版本为 **v0.1.1-preview**，新增表格翻译、窗口缩放和右下角缩放手柄。
 
-**[下载实验版](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.1-preview) · [安装与使用](INSTALL.md)**
+**[下载 Mac 版（M 系列）](https://github.com/linjiongxie/paragraph-translator/releases/download/v0.1.1-preview/paragraph-translator-0.1.1-macos-arm64.zip) · [发布说明](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.1-preview) · [安装与使用](INSTALL.md)**
 
-现成下载包适用于 Apple Silicon（M 系列）Mac，使用自己的 ChatGPT/Codex 账号与额度。当前固定 `gpt-6-luna / low`，账号和 CLI 必须能访问该模型。App 声明最低 macOS 14，实际验收仅 macOS 27；这是尚未 Apple 公证的实验版，首次打开及系统权限步骤见安装指南。
+## 功能与能力
+
+| 功能 | 能做什么 |
+| --- | --- |
+| 选区整段翻译 | 在来源应用中选中英文后按 **⌥⌘T**，浮窗显示简体中文译文。 |
+| 流式输出 | 中文随生成过程逐步出现；表格逐单元格显示，待译单元格暂时留空。 |
+| 段落与列表 | 保留段落、空行、列表编号、层级缩进及可读取的强调格式。 |
+| Markdown 格式 | 支持标题、**加粗**、*斜体*、行内代码和链接，译文字号为 15pt。 |
+| Markdown 表格 | 保留表头、行列、空单元格和 Markdown 列对齐，支持单元格内样式与换行。也可读取 Claude 中完整的普通表格。 |
+| 表格数字保护 | 纯数值与空单元格直接保留；译文完成时校验表格结构及单元格中的数字。 |
+| 窗口缩放与滚动 | 拖动窗口边缘或右下角斜线手柄放大、缩小；手柄有缩放光标和悬停提示，大表格可横向、纵向滚动。 |
+| 多种输入方式 | 支持手工输入、粘贴英文，以及从菜单主动翻译剪贴板内容。手工输入无需跨应用读取权限。 |
+| 复制与取消 | 一键复制译文的 Markdown 文本；按 **Esc** 或关闭浮窗取消当前请求，失败时可重试。 |
+
+窗口在同一次运行中保留调整后的尺寸。格式读取效果取决于来源应用提供的信息，无法读取排版时会明确提示回退到纯文本。
+
+## 开始使用
+
+1. 在自己的 Mac 上安装 Codex CLI，并用自己的 ChatGPT 账号完成登录。
+2. 下载并解压 App，拖入“应用程序”，打开后按提示授予辅助功能权限。
+3. 选中英文，按 **⌥⌘T**；也可以从菜单栏选择“输入或粘贴英文…”。表格较大时直接拉大浮窗。
+
+首次打开、系统权限、旧版升级和常见问题，见[安装指南](INSTALL.md)。
+
+## 当前兼容范围与限制
+
+- **系统与芯片：**下载包适用于 Apple Silicon（M 系列，arm64）。App 声明最低 macOS 14，实际运行验收为 macOS 27；Intel 和较旧系统尚未完成验收。
+- **来源应用：**已实测 TextEdit、Claude。跨应用读取依赖来源应用提供选区及格式信息，其他浏览器、PDF 查看器等尚未逐一验收。
+- **表格：**跨应用取表需完整选中普通表格，且来源提供表格元数据；部分选区或合并单元格会回退到纯文本。也可直接粘贴原始 Markdown 表格。
+- **模型与额度：**当前固定使用 **`gpt-6-luna / low`**，账号和 CLI 需有该模型的访问权限；暂不支持在 App 内切换模型。单次最多 **20,000 字符**，超时为 **60 秒**，响应速度受网络和模型负载影响。
+- **暂不支持：**图片或扫描 PDF 的 OCR、系统三指查词手势接管、复杂网页排版的完整还原及自动更新。
+
+这是尚未做 Apple Developer ID 签名或公证的实验版，首次打开方式见[安装指南](INSTALL.md)。
+
+## 账号与隐私
+
+- 原文会通过你本机的 Codex CLI 发送给模型处理，使用你自己的账号和额度。
+- 工具只在你主动触发时读取选区；正常取词不会模拟复制或覆盖剪贴板。
+- App 不附带共享账号、API Key 或登录令牌，也不保存自己的翻译历史。Codex CLI 和模型服务的数据处理行为以各自配置和政策为准。
 
 [验证记录](VALIDATION.md) · [隐私说明](PRIVACY.md) · [MIT License](LICENSE)
+
+欢迎通过 [GitHub Issues](https://github.com/linjiongxie/paragraph-translator/issues) 反馈，附上系统版本、Mac 芯片、Codex CLI 版本和脱敏后的报错信息。
 
 本工具不是 OpenAI 官方产品。
