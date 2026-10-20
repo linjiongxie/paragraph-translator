@@ -309,12 +309,13 @@ final class TranslatorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDele
         if panel == nil {
             let window = TranslationPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 480, height: 530),
-                styleMask: [.titled, .fullSizeContentView, .nonactivatingPanel],
+                styleMask: [.titled, .resizable, .fullSizeContentView, .nonactivatingPanel],
                 backing: .buffered, defer: false
             )
             window.title = "段落翻译"
             window.titleVisibility = .hidden
             window.titlebarAppearsTransparent = true
+            window.contentMinSize = NSSize(width: 480, height: 530)
             window.standardWindowButton(.closeButton)?.isHidden = true
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
             window.standardWindowButton(.zoomButton)?.isHidden = true
@@ -324,12 +325,16 @@ final class TranslatorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDele
             window.hidesOnDeactivate = false
             window.isReleasedWhenClosed = false
             window.onDismiss = { [weak self] in self?.dismiss() }
-            window.contentView = NSHostingView(rootView: TranslationCard(
+            let content = NSHostingView(rootView: TranslationCard(
                 model: model,
                 onClose: { [weak self] in self?.dismiss() },
                 onAccess: { [weak self] in self?.requestAccess() },
                 onEdit: { [weak self] in self?.openEditor() }
             ))
+            // The panel owns its dimensions; flexible SwiftUI content must
+            // not replace them with an unbounded preferred size.
+            content.sizingOptions = []
+            window.contentView = content
             panel = window
             outsideMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown]) { [weak self] _ in
                 Task { @MainActor in
@@ -348,7 +353,12 @@ final class TranslatorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDele
         let anchor = bounds.map { NSPoint(x: $0.midX, y: $0.minY) } ?? NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(anchor) } ?? NSScreen.main
         let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
-        let size = panel.frame.size
+        // Reopening on a smaller display must keep a previously enlarged
+        // panel inside that display's usable bounds.
+        panel.maxSize = NSSize(width: max(panel.minSize.width, visible.width - 24),
+                               height: max(panel.minSize.height, visible.height - 24))
+        let size = NSSize(width: min(panel.frame.width, panel.maxSize.width),
+                          height: min(panel.frame.height, panel.maxSize.height))
         var x = anchor.x - size.width / 2
         var y = anchor.y - size.height - 12
         if y < visible.minY + 12 {
@@ -356,7 +366,7 @@ final class TranslatorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDele
         }
         x = min(max(x, visible.minX + 12), visible.maxX - size.width - 12)
         y = min(max(y, visible.minY + 12), visible.maxY - size.height - 12)
-        panel.setFrameOrigin(NSPoint(x: x, y: y))
+        panel.setFrame(NSRect(origin: NSPoint(x: x, y: y), size: size), display: true)
         panel.orderFrontRegardless()
         // A nonactivating panel can receive Escape/copy without switching the source app.
         panel.makeKey()

@@ -9,6 +9,7 @@ struct WebParagraphContext {
 struct WebInlineTraits {
     var strong = false
     var emphasized = false
+    var tableCell: WebTableCellContext?
 }
 
 struct WebInlineInterval<Marker> {
@@ -26,11 +27,56 @@ protocol WebSelectionInlineMarkerSource {
     func inlineInterval(at marker: Marker) throws -> WebInlineInterval<Marker>
     func nextMarker(after marker: Marker) throws -> Marker
     func inlineText(from start: Marker, to end: Marker) throws -> String
+    func tableObjectIsInGap(from start: Marker, to end: Marker, before cell: WebTableCellContext) throws -> Bool
+}
+
+extension WebSelectionInlineMarkerSource {
+    func tableObjectIsInGap(from start: Marker, to end: Marker, before cell: WebTableCellContext) throws -> Bool { false }
+}
+
+struct WebTableCellContext: Equatable {
+    let table: Int
+    let row: Int
+    let column: Int
+    let rows: Int
+    let columns: Int
+    let rowSpan: Int
+    let columnSpan: Int
+    let complete: Bool
+    let tableCharacters: Int?
+
+    var attribute: NSDictionary {
+        ["table": table, "row": row, "column": column, "rows": rows, "columns": columns,
+         "rowSpan": rowSpan, "columnSpan": columnSpan, "complete": complete,
+         "tableCharacters": tableCharacters ?? -1] as NSDictionary
+    }
+
+    init(table: Int, row: Int, column: Int, rows: Int, columns: Int,
+         rowSpan: Int = 1, columnSpan: Int = 1, complete: Bool, tableCharacters: Int? = nil) {
+        self.table = table; self.row = row; self.column = column
+        self.rows = rows; self.columns = columns
+        self.rowSpan = rowSpan; self.columnSpan = columnSpan; self.complete = complete
+        self.tableCharacters = tableCharacters
+    }
+
+    init?(_ value: Any?) {
+        guard let value = value as? NSDictionary,
+              let table = value["table"] as? Int, let row = value["row"] as? Int,
+              let column = value["column"] as? Int, let rows = value["rows"] as? Int,
+              let columns = value["columns"] as? Int,
+              let rowSpan = value["rowSpan"] as? Int, let columnSpan = value["columnSpan"] as? Int,
+              let complete = value["complete"] as? Bool else { return nil }
+        self.init(table: table, row: row, column: column, rows: rows, columns: columns,
+                  rowSpan: rowSpan, columnSpan: columnSpan, complete: complete,
+                  tableCharacters: (value["tableCharacters"] as? Int).flatMap { $0 >= 0 ? $0 : nil })
+    }
 }
 
 enum WebSemanticStyle {
     static let strong = NSAttributedString.Key("ParagraphSemanticStrong")
     static let emphasized = NSAttributedString.Key("ParagraphSemanticEmphasis")
+    static let tableCell = NSAttributedString.Key("ParagraphSemanticTableCell")
+    static let tableObject = NSAttributedString.Key("ParagraphSemanticTableObject")
 }
 
 @MainActor
@@ -55,7 +101,7 @@ enum WebSelectionInlineTraversal {
         var offset = 0
         var intervals = 0
 
-        func append(until intervalEnd: Source.Marker, traits: WebInlineTraits) throws {
+        func append(until intervalEnd: Source.Marker, traits: WebInlineTraits, beforeCell: WebTableCellContext? = nil) throws {
             try checkTime()
             guard try source.compare(cursor, intervalEnd) == .orderedAscending,
                   try source.compare(intervalEnd, end) != .orderedDescending else { throw WebSelectionFailure.noProgress }
@@ -68,6 +114,11 @@ enum WebSelectionInlineTraversal {
             if length > 0 {
                 if traits.strong { result.addAttribute(WebSemanticStyle.strong, value: true, range: range) }
                 if traits.emphasized { result.addAttribute(WebSemanticStyle.emphasized, value: true, range: range) }
+                if let cell = traits.tableCell { result.addAttribute(WebSemanticStyle.tableCell, value: cell.attribute, range: range) }
+                if text == "\u{FFFC}", let cell = beforeCell,
+                   try source.tableObjectIsInGap(from: cursor, to: intervalEnd, before: cell) {
+                    result.addAttribute(WebSemanticStyle.tableObject, value: ["table": cell.table] as NSDictionary, range: range)
+                }
             }
             offset += length
             cursor = intervalEnd
@@ -75,6 +126,10 @@ enum WebSelectionInlineTraversal {
 
         while try source.compare(cursor, end) == .orderedAscending {
             try checkTime()
+            // Chromium can represent the same textual position using a cell
+            // anchor and its final static-text leaf. Once the supplied exact
+            // paragraph is fully reconstructed, no further leaf text exists.
+            if offset == original.length { break }
             var probe = cursor
             var interval: WebInlineInterval<Source.Marker>?
             // At a boundary Chromium can return the exhausted previous leaf.
@@ -98,7 +153,7 @@ enum WebSelectionInlineTraversal {
             guard let interval else { throw WebSelectionFailure.noProgress }
             if try source.compare(cursor, interval.start) == .orderedAscending {
                 let gapEnd = try source.compare(interval.start, end) == .orderedAscending ? interval.start : end
-                try append(until: gapEnd, traits: WebInlineTraits())
+                try append(until: gapEnd, traits: WebInlineTraits(), beforeCell: interval.traits.tableCell)
                 if try source.compare(cursor, end) == .orderedSame { break }
             }
             let clippedEnd = try source.compare(interval.end, end) == .orderedAscending ? interval.end : end
@@ -119,6 +174,7 @@ enum WebSelectionFailure: Error, Equatable {
     case limitExceeded
     case timedOut
     case selectionChanged
+    case unsupportedTable
     case accessibilityError(Int)
 
     var fallbackReason: String {
@@ -132,6 +188,7 @@ enum WebSelectionFailure: Error, Equatable {
         case .limitExceeded: detail = "选区超过了格式读取预算"
         case .timedOut: detail = "格式读取超过了 1 秒预算"
         case .selectionChanged: detail = "读取期间来源选区发生了变化"
+        case .unsupportedTable: detail = "表格选区不完整，或包含暂不支持的合并单元格"
         case .accessibilityError(let code): detail = "辅助功能格式接口返回错误 \(code)"
         }
         return "\(detail)；已回退到普通选区文字，段落、列表或字体格式可能不完整。"
@@ -143,11 +200,16 @@ enum WebSelectionFailure: Error, Equatable {
 @MainActor
 protocol WebSelectionMarkerSource {
     associatedtype Marker
+    var selectedTextLength: Int? { get }
     func compare(_ left: Marker, _ right: Marker) throws -> ComparisonResult
     func nextParagraphEnd(after marker: Marker) throws -> Marker
     func attributedText(from start: Marker, to end: Marker) throws -> NSAttributedString
     func context(from start: Marker, to end: Marker) throws -> WebParagraphContext
     func selectionMatches(start: Marker, end: Marker) throws -> Bool
+}
+
+extension WebSelectionMarkerSource {
+    var selectedTextLength: Int? { nil }
 }
 
 @MainActor
@@ -174,10 +236,14 @@ enum WebSelectionTraversal {
         }
 
         var cursor = start
-        var paragraphs: [(text: String, context: WebParagraphContext)] = []
+        var paragraphs: [(attributed: NSAttributedString, context: WebParagraphContext)] = []
         var characterCount = 0
         while try source.compare(cursor, end) == .orderedAscending {
             try checkTime()
+            // Distinct AX anchors may denote the identical final textual
+            // position. The exact SelectedText projection is an independent
+            // bound; the source still verifies its contents and markers below.
+            if let length = source.selectedTextLength, characterCount == length { break }
             guard paragraphs.count < maximumParagraphs else {
                 throw WebSelectionFailure.limitExceeded
             }
@@ -196,8 +262,7 @@ enum WebSelectionTraversal {
                 throw WebSelectionFailure.limitExceeded
             }
             let context = try source.context(from: cursor, to: clippedEnd)
-            let markdown = WebSelectionMarkdown.render(attributed, context: context)
-            paragraphs.append((markdown, context))
+            paragraphs.append((attributed, context))
             cursor = clippedEnd
         }
         try checkTime()
@@ -205,21 +270,11 @@ enum WebSelectionTraversal {
             throw WebSelectionFailure.selectionChanged
         }
         try checkTime()
-        guard paragraphs.contains(where: { !$0.text.isEmpty }) else {
+        guard paragraphs.contains(where: { $0.attributed.length > 0 }) else {
             throw WebSelectionFailure.invalidContent
         }
-        var result = ""
-        for (index, paragraph) in paragraphs.enumerated() {
-            if index > 0 {
-                let bothLists = paragraphs[index - 1].context.listDepth > 0
-                    && paragraph.context.listDepth > 0
-                let desired = bothLists ? 1 : 2
-                let existing = result.reversed().prefix(while: { $0 == "\n" }).count
-                    + paragraph.text.prefix(while: { $0 == "\n" }).count
-                result += String(repeating: "\n", count: max(0, desired - existing))
-            }
-            result += paragraph.text
-        }
+        let result = try WebSelectionMarkdown.renderBlocks(paragraphs)
+        guard !result.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw WebSelectionFailure.invalidContent }
         guard result.utf16.count <= maximumCharacters else {
             throw WebSelectionFailure.limitExceeded
         }
@@ -306,6 +361,113 @@ enum WebSelectionMarkdown {
         return indentation + prefix + markdown.replacingOccurrences(of: "\n", with: "\n" + continuation)
     }
 
+    /// Group only explicit AX cell metadata. Range containment, or exact text
+    /// coverage of one table anchor's offsets, proves that absent spans are
+    /// empty cells rather than unselected values. Partial tables and merged
+    /// cells use the existing plain fallback.
+    static func renderBlocks(_ paragraphs: [(attributed: NSAttributedString, context: WebParagraphContext)]) throws -> String {
+        var blocks: [(text: String, context: WebParagraphContext)] = []
+        var cells: [(context: WebTableCellContext, attributed: NSMutableAttributedString, rawCharacters: Int)] = []
+        var previousParagraphCell: WebTableCellContext?
+        var tableObjects: Set<Int> = []
+        var renderedTables: Set<Int> = []
+
+        func flushTable() throws {
+            guard let first = cells.first?.context else { return }
+            let capturedCharacters = cells.reduce(0) { $0 + $1.rawCharacters }
+            let complete = first.complete || first.tableCharacters == capturedCharacters
+            guard complete, first.rows > 0, first.columns > 0,
+                  first.rows <= 1_000, first.columns <= 1_000,
+                  first.rows <= 1_000 / first.columns else { throw WebSelectionFailure.unsupportedTable }
+            var grid = Array(repeating: Array(repeating: "", count: first.columns), count: first.rows)
+            var previousIndex = -1
+            for cell in cells {
+                let meta = cell.context
+                guard meta.table == first.table, meta.rows == first.rows, meta.columns == first.columns,
+                      meta.tableCharacters == first.tableCharacters, meta.complete == first.complete,
+                      meta.rowSpan == 1, meta.columnSpan == 1,
+                      (0..<first.rows).contains(meta.row), (0..<first.columns).contains(meta.column) else {
+                    throw WebSelectionFailure.unsupportedTable
+                }
+                let index = meta.row * first.columns + meta.column
+                guard index > previousIndex else { throw WebSelectionFailure.unsupportedTable }
+                previousIndex = index
+                let markdown = render(cell.attributed, context: WebParagraphContext())
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "|", with: "\\|")
+                    .replacingOccurrences(of: "\r\n", with: "\n")
+                    .replacingOccurrences(of: "\r", with: "\n")
+                    .replacingOccurrences(of: "\n", with: "<br>")
+                grid[meta.row][meta.column] = markdown
+            }
+            func row(_ values: [String]) -> String { "| " + values.joined(separator: " | ") + " |" }
+            var lines = [row(grid[0]), row(Array(repeating: "---", count: first.columns))]
+            lines += grid.dropFirst().map(row)
+            blocks.append((lines.joined(separator: "\n"), WebParagraphContext()))
+            renderedTables.insert(first.table)
+            cells.removeAll(keepingCapacity: true)
+        }
+
+        for paragraph in paragraphs {
+            var pieces: [(NSAttributedString, WebTableCellContext?)] = []
+            paragraph.attributed.enumerateAttribute(WebSemanticStyle.tableCell,
+                in: NSRange(location: 0, length: paragraph.attributed.length)) { value, range, _ in
+                let piece = NSMutableAttributedString(attributedString: paragraph.attributed.attributedSubstring(from: range))
+                if value == nil {
+                    var objectRanges: [NSRange] = []
+                    piece.enumerateAttribute(WebSemanticStyle.tableObject, in: NSRange(location: 0, length: piece.length)) { value, range, _ in
+                        if let owner = value as? NSDictionary, let table = owner["table"] as? Int,
+                           (piece.string as NSString).substring(with: range) == "\u{FFFC}" {
+                            tableObjects.insert(table)
+                            objectRanges.append(range)
+                        }
+                    }
+                    for range in objectRanges.reversed() { piece.deleteCharacters(in: range) }
+                }
+                if piece.length > 0 { pieces.append((piece, WebTableCellContext(value))) }
+            }
+            var firstPiece = true
+            for (piece, metadata) in pieces {
+                if let metadata {
+                    if let last = cells.last, last.context.table != metadata.table { try flushTable() }
+                    if let last = cells.last, last.context == metadata {
+                        if firstPiece, previousParagraphCell == metadata,
+                           !last.attributed.string.hasSuffix("\n"), !piece.string.hasPrefix("\n") {
+                            last.attributed.append(NSAttributedString(string: "\n"))
+                        }
+                        last.attributed.append(piece)
+                        cells[cells.count - 1].rawCharacters += piece.length
+                    } else {
+                        cells.append((metadata, NSMutableAttributedString(attributedString: piece), piece.length))
+                    }
+                    previousParagraphCell = metadata
+                } else if !piece.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    try flushTable()
+                    blocks.append((render(piece, context: paragraph.context), paragraph.context))
+                    previousParagraphCell = nil
+                } else if cells.isEmpty {
+                    blocks.append((render(piece, context: paragraph.context), paragraph.context))
+                    previousParagraphCell = nil
+                }
+                firstPiece = false
+            }
+        }
+        try flushTable()
+        guard tableObjects.isSubset(of: renderedTables) else { throw WebSelectionFailure.unsupportedTable }
+        var result = ""
+        for (index, block) in blocks.enumerated() {
+            if index > 0 {
+                let bothLists = blocks[index - 1].context.listDepth > 0 && block.context.listDepth > 0
+                let desired = bothLists ? 1 : 2
+                let existing = result.reversed().prefix(while: { $0 == "\n" }).count
+                    + block.text.prefix(while: { $0 == "\n" }).count
+                result += String(repeating: "\n", count: max(0, desired - existing))
+            }
+            result += block.text
+        }
+        return result
+    }
+
     private static func fontTraits(_ attributes: [NSAttributedString.Key: Any]) -> (bold: Bool, italic: Bool) {
         let font = attributes[.accessibilityFont] as? NSDictionary
         var bold = (attributes[WebSemanticStyle.strong] as? NSNumber)?.boolValue == true
@@ -358,13 +520,24 @@ private final class AccessibilityWebSelectionSource: WebSelectionMarkerSource, W
     private let element: AXUIElement
     private let deadline: TimeInterval
     private let expectedText: String?
+    private struct TableContext {
+        let identifier: Int
+        let rows: Int
+        let columns: Int
+        let complete: Bool
+        let characters: Int?
+    }
     private struct NodeContext {
         var paragraph = WebParagraphContext()
         var inline = WebInlineTraits()
+        var table: TableContext?
     }
+    private var tables: [AXUIElement] = []
+    private var selection: (Marker, Marker)?
     private var contexts: [(AXUIElement, NodeContext)] = []
     private var originalText: String?
     private var capturedText = ""
+    var selectedTextLength: Int? { originalText?.utf16.count }
 
     init(element: AXUIElement, deadline: TimeInterval, expectedText: String?) {
         self.element = element
@@ -374,6 +547,7 @@ private final class AccessibilityWebSelectionSource: WebSelectionMarkerSource, W
 
     func beginSelection() throws -> (Marker, Marker) {
         let range = try selectedRange()
+        selection = range
         do {
             originalText = try attribute(kAXSelectedTextAttribute as CFString, of: element) as? String
             if let expectedText, originalText != expectedText { throw WebSelectionFailure.selectionChanged }
@@ -434,7 +608,23 @@ private final class AccessibilityWebSelectionSource: WebSelectionMarkerSource, W
             attributed = NSAttributedString(string: text)
         }
         capturedText += attributed.string
-        return try WebSelectionInlineTraversal.applying(to: attributed, source: self, start: start, end: end, deadline: deadline)
+        let rich = try WebSelectionInlineTraversal.applying(to: attributed, source: self, start: start, end: end, deadline: deadline)
+        let result = NSMutableAttributedString(attributedString: rich)
+        var attachments: [(NSRange, AXUIElement)] = []
+        rich.enumerateAttribute(NSAttributedString.Key("AXAttachment"), in: NSRange(location: 0, length: rich.length)) { value, range, _ in
+            if let value, CFGetTypeID(value as CFTypeRef) == AXUIElementGetTypeID(),
+               (rich.string as NSString).substring(with: range) == "\u{FFFC}" {
+                attachments.append((range, value as! AXUIElement))
+            }
+        }
+        for (range, attachment) in attachments {
+            if try attribute(kAXRoleAttribute as CFString, of: attachment) as? String == "AXTable" {
+                let owner = try context(of: attachment).table
+                guard let owner else { throw WebSelectionFailure.unsupportedTable }
+                result.addAttribute(WebSemanticStyle.tableObject, value: ["table": owner.identifier] as NSDictionary, range: range)
+            }
+        }
+        return result
     }
 
     func inlineInterval(at marker: Marker) throws -> WebInlineInterval<Marker> {
@@ -453,6 +643,19 @@ private final class AccessibilityWebSelectionSource: WebSelectionMarkerSource, W
         let range = AXTextMarkerRangeCreate(kCFAllocatorDefault, start, end)
         guard let text = try parameter(kAXStringForTextMarkerRangeParameterizedAttribute as CFString, range) as? String else { throw WebSelectionFailure.invalidContent }
         return text
+    }
+
+    func tableObjectIsInGap(from start: Marker, to end: Marker, before cell: WebTableCellContext) throws -> Bool {
+        guard tables.indices.contains(cell.table) else { throw WebSelectionFailure.unsupportedTable }
+        let table = tables[cell.table]
+        let value = try parameter(kAXTextMarkerRangeForUIElementParameterizedAttribute as CFString, table)
+        guard CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() else { throw WebSelectionFailure.invalidRange }
+        let first = AXTextMarkerRangeCopyStartMarker(value as! AXTextMarkerRange)
+        // Some Chromium tables place an unstyled object-replacement character
+        // before their first cell. The table's explicit marker must be inside
+        // the already-read one-character gap; adjacent text alone is no proof.
+        return try compare(start, first) != .orderedDescending
+            && compare(first, end) == .orderedAscending
     }
 
     func context(from start: Marker, to end: Marker) throws -> WebParagraphContext {
@@ -509,11 +712,67 @@ private final class AccessibilityWebSelectionSource: WebSelectionMarkerSource, W
         for (node, role, subrole) in path.reversed() {
             if role == (kAXListRole as String) { result.paragraph.listDepth += 1 }
             if role == (kAXHeadingRole as String) { result.paragraph.isHeading = true }
+            if role == "AXTable" {
+                result.table = try tableContext(node)
+                result.inline.tableCell = nil
+            }
+            if ["AXCell", "AXColumnHeader", "AXRowHeader"].contains(role), let table = result.table {
+                let row = try indexRange("AXRowIndexRange", of: node)
+                let column = try indexRange("AXColumnIndexRange", of: node)
+                result.inline.tableCell = WebTableCellContext(table: table.identifier,
+                    row: row.location, column: column.location, rows: table.rows, columns: table.columns,
+                    rowSpan: row.length, columnSpan: column.length,
+                    complete: table.complete, tableCharacters: table.characters)
+            }
             if subrole == "AXStrongStyleGroup" { result.inline.strong = true }
             if subrole == "AXEmphasisStyleGroup" { result.inline.emphasized = true }
             contexts.append((node, result))
         }
         return result
+    }
+
+    private func indexRange(_ name: String, of target: AXUIElement) throws -> CFRange {
+        let value = try attribute(name as CFString, of: target)
+        guard CFGetTypeID(value) == AXValueGetTypeID(), AXValueGetType(value as! AXValue) == .cfRange else {
+            throw WebSelectionFailure.unsupportedTable
+        }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0, range.length > 0 else {
+            throw WebSelectionFailure.unsupportedTable
+        }
+        return range
+    }
+
+    private func tableContext(_ table: AXUIElement) throws -> TableContext {
+        guard let selection,
+              let rows = try attribute("AXARIARowCount" as CFString, of: table) as? NSNumber,
+              let columns = try attribute("AXARIAColumnCount" as CFString, of: table) as? NSNumber,
+              rows.intValue > 0, columns.intValue > 0,
+              rows.intValue <= 1_000, columns.intValue <= 1_000,
+              rows.intValue <= 1_000 / columns.intValue else { throw WebSelectionFailure.unsupportedTable }
+        let value = try parameter(kAXTextMarkerRangeForUIElementParameterizedAttribute as CFString, table)
+        guard CFGetTypeID(value) == AXTextMarkerRangeGetTypeID() else { throw WebSelectionFailure.invalidRange }
+        let range = value as! AXTextMarkerRange
+        let first = AXTextMarkerRangeCopyStartMarker(range)
+        let last = AXTextMarkerRangeCopyEndMarker(range)
+        let complete = try compare(selection.0, first) != .orderedDescending
+            && compare(last, selection.1) != .orderedDescending
+        var characters: Int?
+        // These are offsets local to one explicitly identified table anchor,
+        // never global offsets mixed with a selected static-text anchor. They
+        // describe length only and do not request any unselected text.
+        if CFEqual(try uiElement(parameter(kAXUIElementForTextMarkerParameterizedAttribute as CFString, first)), table),
+           CFEqual(try uiElement(parameter(kAXUIElementForTextMarkerParameterizedAttribute as CFString, last)), table),
+           let a = try parameter(kAXIndexForTextMarkerParameterizedAttribute as CFString, first) as? NSNumber,
+           let b = try parameter(kAXIndexForTextMarkerParameterizedAttribute as CFString, last) as? NSNumber,
+           a.intValue >= 0, b.intValue >= a.intValue, b.intValue - a.intValue <= 20_000 {
+            characters = b.intValue - a.intValue
+        }
+        let identifier: Int
+        if let index = tables.firstIndex(where: { CFEqual($0, table) }) { identifier = index }
+        else { identifier = tables.count; tables.append(table) }
+        return TableContext(identifier: identifier, rows: rows.intValue, columns: columns.intValue,
+                            complete: complete, characters: characters)
     }
 
     private func prepare(_ target: AXUIElement) throws {

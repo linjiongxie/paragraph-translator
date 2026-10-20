@@ -14,6 +14,7 @@ final class FixtureSource: WebSelectionMarkerSource {
     var comparisonUnavailable = false
     var failAfterReads: Int?
     var delayRead = false
+    var selectedTextLength: Int?
 
     init(text: NSAttributedString, ends: [Int], contexts: [(Range<Int>, WebParagraphContext)], selection: Range<Int>) {
         self.text = text; self.ends = ends; self.contexts = contexts; self.selection = selection
@@ -51,6 +52,7 @@ final class InlineFixtureSource: WebSelectionInlineMarkerSource {
     var stuck = false
     var wrongText = false
     var delayRead = false
+    var ownedTableObjectGaps: [Range<Int>] = []
 
     init(text: String, intervals: [WebInlineInterval<Int>], selection: Range<Int>) {
         self.text = text; self.intervals = intervals; self.selection = selection
@@ -67,6 +69,9 @@ final class InlineFixtureSource: WebSelectionInlineMarkerSource {
         return interval
     }
     func nextMarker(after marker: Int) throws -> Int { stuck ? marker : marker + 1 }
+    func tableObjectIsInGap(from start: Int, to end: Int, before cell: WebTableCellContext) throws -> Bool {
+        ownedTableObjectGaps.contains(start..<end)
+    }
     func inlineText(from start: Int, to end: Int) throws -> String {
         guard start >= selection.lowerBound, end <= selection.upperBound, start < end else { throw WebSelectionFailure.invalidRange }
         if delayRead { Thread.sleep(forTimeInterval: 0.02) }
@@ -331,6 +336,95 @@ struct TraversalTests {
             }
             try check(actualStyles == styles, "Adjacent bold/italic runs must preserve actual parser intents: \(markdown)")
         }
+        // AX may expose each HTML cell as a paragraph while SelectedText has
+        // no tabs or newlines. Cell metadata must recover that real grid.
+        func tableFixture(_ values: [[String]] = [["Metric", "Before", "After"], ["Count", "12", "8"], ["Rate", "50%", "60%"]], complete: Bool = true, selectedCharacters: Int? = nil, tableCharacters: Int? = nil, span: Int = 1) -> FixtureSource {
+            let attributed = NSMutableAttributedString(string: values.flatMap { $0 }.joined())
+            var offset = 0
+            var ends: [Int] = []
+            for (row, cells) in values.enumerated() {
+                for (column, value) in cells.enumerated() {
+                    let range = NSRange(location: offset, length: value.utf16.count)
+                    if range.length > 0 {
+                        var metadata: [String: Any] = ["table": 1, "row": row, "column": column,
+                            "rows": values.count, "columns": cells.count, "rowSpan": 1, "columnSpan": span,
+                            "complete": complete]
+                        if let tableCharacters { metadata["tableCharacters"] = tableCharacters }
+                        attributed.addAttribute(NSAttributedString.Key("ParagraphSemanticTableCell"), value: metadata as NSDictionary, range: range)
+                    }
+                    offset += range.length
+                    ends.append(offset)
+                }
+            }
+            return FixtureSource(text: attributed, ends: ends, contexts: [], selection: 0..<(selectedCharacters ?? offset))
+        }
+        let fullTable = tableFixture()
+        let tableResult = try WebSelectionTraversal.capture(source: fullTable, start: 0, end: fullTable.selection.upperBound)
+        try check(tableResult == "| Metric | Before | After |\n| --- | --- | --- |\n| Count | 12 | 8 |\n| Rate | 50% | 60% |", "HTML table row and column metadata must survive flattened selected text; got \(tableResult.debugDescription)")
+        try check(fullTable.reads.count == 9 && fullTable.reads.allSatisfy { fullTable.selection.contains($0.lowerBound) && $0.upperBound <= fullTable.selection.upperBound }, "Table reconstruction cannot request unselected text")
+        let emptyHeaderValues = [["", "Before", "After"], ["Count", "12", "8"]]
+        let tableCharacters = emptyHeaderValues.flatMap { $0 }.joined().utf16.count
+        let samePositionTable = tableFixture(emptyHeaderValues, complete: false, tableCharacters: tableCharacters)
+        let samePositionMarkdown = try WebSelectionTraversal.capture(source: samePositionTable, start: 0, end: samePositionTable.selection.upperBound)
+        try check(samePositionMarkdown == "|  | Before | After |\n| --- | --- | --- |\n| Count | 12 | 8 |", "Same-table anchor index metadata plus exact selected-cell coverage proves a full table and preserves the genuinely blank first header")
+        let partialTable = tableFixture(emptyHeaderValues, complete: false, selectedCharacters: tableCharacters - 1, tableCharacters: tableCharacters)
+        do {
+            _ = try WebSelectionTraversal.capture(source: partialTable, start: 0, end: partialTable.selection.upperBound)
+            try check(false, "Missing even one table character cannot be published as a complete Markdown grid")
+        } catch WebSelectionFailure.unsupportedTable { checks += 1 }
+        try check(partialTable.reads.allSatisfy { $0.upperBound <= partialTable.selection.upperBound }, "A partial table cannot be repaired by reading beyond the selection")
+        let mergedTable = tableFixture(span: 2)
+        do {
+            _ = try WebSelectionTraversal.capture(source: mergedTable, start: 0, end: mergedTable.selection.upperBound)
+            try check(false, "Merged cells must not invent an ordinary rectangular table")
+        } catch WebSelectionFailure.unsupportedTable { checks += 1 }
+        let aliasEnd = InlineFixtureSource(text: "plain strong tail", intervals: mixed.intervals, selection: 0..<17)
+        let aliasAttributed = try WebSelectionInlineTraversal.applying(to: NSAttributedString(string: aliasEnd.text), source: aliasEnd,
+            start: 0, end: 18, deadline: ProcessInfo.processInfo.systemUptime + 1)
+        try check(aliasAttributed.string == aliasEnd.text && aliasEnd.reads == [0..<6, 6..<12, 12..<17], "A text-equivalent final marker with a distinct opaque representation cannot force a read past the captured paragraph")
+        let legitimateObject = simple("literal \u{FFFC} object")
+        try check(try WebSelectionTraversal.capture(source: legitimateObject, start: 0, end: legitimateObject.selection.upperBound) == "literal \u{FFFC} object", "A legitimate object-replacement character outside an explicitly identified table must remain intact")
+        let loneObject = simple("\u{FFFC}")
+        try check(try WebSelectionTraversal.capture(source: loneObject, start: 0, end: 1) == "\u{FFFC}", "A standalone legitimate object character cannot be treated as a table placeholder without owner metadata")
+        let explicitTableObject = NSMutableAttributedString(string: "\u{FFFC}", attributes: [WebSemanticStyle.tableObject: ["table": 1] as NSDictionary])
+        explicitTableObject.append(fullTable.text)
+        let ownedObject = FixtureSource(text: explicitTableObject, ends: [1] + fullTable.ends.map { $0 + 1 }, contexts: [], selection: 0..<explicitTableObject.length)
+        try check(try WebSelectionTraversal.capture(source: ownedObject, start: 0, end: ownedObject.selection.upperBound) == tableResult, "Only an explicitly AXTable-owned object marker is removed after exact selected text has been read")
+        let multilineTemplate = tableFixture([["H"], ["ABCD"]], complete: false, tableCharacters: 5)
+        let multilineCells = FixtureSource(text: multilineTemplate.text, ends: [1, 3, 5], contexts: [], selection: 0..<5)
+        try check(try WebSelectionTraversal.capture(source: multilineCells, start: 0, end: 5) == "| H |\n| --- |\n| AB<br>CD |", "Paragraph boundaries inside one table cell become breaks without corrupting source-character coverage proof")
+        let pipeCells = tableFixture([["A | B"], ["x\\y\nz"]])
+        try check(try WebSelectionTraversal.capture(source: pipeCells, start: 0, end: pipeCells.selection.upperBound) == "| A \\| B |\n| --- |\n| x\\\\y<br>z |", "Literal pipes, backslashes and cell line breaks must remain valid Markdown cells")
+        let strongCells = NSMutableAttributedString(attributedString: fullTable.text)
+        strongCells.addAttribute(WebSemanticStyle.strong, value: true, range: (strongCells.string as NSString).range(of: "Count"))
+        let strongTable = FixtureSource(text: strongCells, ends: fullTable.ends, contexts: [], selection: fullTable.selection)
+        try check(try WebSelectionTraversal.capture(source: strongTable, start: 0, end: strongTable.selection.upperBound).contains("| **Count** | 12 | 8 |"), "Table reconstruction must retain the existing leaf-level semantic strong capture")
+        let paragraphAlias = simple("text")
+        paragraphAlias.selectedTextLength = 4
+        try check(try WebSelectionTraversal.capture(source: paragraphAlias, start: 0, end: 5) == "text", "A full exact SelectedText projection terminates paragraph traversal when a different final AX anchor denotes the same textual boundary")
+        try check(paragraphAlias.reads == [0..<4], "Equivalent end anchors cannot cause an extra paragraph or out-of-selection text read")
+        let objectCell = WebTableCellContext(table: 0, row: 0, column: 0, rows: 1, columns: 1, complete: false, tableCharacters: 1)
+        let objectGap = InlineFixtureSource(text: "\u{FFFC}H", intervals: [WebInlineInterval(start: 1, end: 2, traits: WebInlineTraits(tableCell: objectCell))], selection: 0..<2)
+        objectGap.ownedTableObjectGaps = [0..<1]
+        let gapAttributed = try inline(objectGap)
+        try check(try WebSelectionMarkdown.renderBlocks([(gapAttributed, WebParagraphContext())]) == "| H |\n| --- |", "A one-character selected object gap is removed only when the next cell's own table start marker lies inside it")
+        let unrelatedGap = InlineFixtureSource(text: objectGap.text, intervals: objectGap.intervals, selection: 0..<2)
+        let unrelatedAttributed = try inline(unrelatedGap)
+        try check(try WebSelectionMarkdown.renderBlocks([(unrelatedAttributed, WebParagraphContext())]) == "\u{FFFC}\n\n| H |\n| --- |", "An identical character adjacent to a table must remain if the table's start metadata does not establish ownership")
+        for content in ["\u{FFFC}", "before \u{FFFC} after"] {
+            let objectOnly = NSMutableAttributedString(string: content)
+            objectOnly.addAttribute(WebSemanticStyle.tableObject, value: ["table": 9] as NSDictionary, range: (content as NSString).range(of: "\u{FFFC}"))
+            do {
+                _ = try WebSelectionMarkdown.renderBlocks([(objectOnly, WebParagraphContext())])
+                try check(false, "A table-owned object cannot disappear if its table cells were not fully recovered")
+            } catch WebSelectionFailure.unsupportedTable { checks += 1 }
+        }
+        let wrongOwnerObject = NSMutableAttributedString(string: "\u{FFFC}", attributes: [WebSemanticStyle.tableObject: ["table": 9] as NSDictionary])
+        wrongOwnerObject.append(fullTable.text)
+        do {
+            _ = try WebSelectionMarkdown.renderBlocks([(wrongOwnerObject, WebParagraphContext())])
+            try check(false, "A different recovered table cannot justify removing this object's table marker")
+        } catch WebSelectionFailure.unsupportedTable { checks += 1 }
         let defaults = SelectedPassage(text: "plain", bounds: nil)
         try check(!defaults.plainFallback && defaults.fallbackReason == nil, "Existing manual-selection callers retain their defaults")
         let failures: [WebSelectionFailure] = [.unsupported, .invalidRange, .comparisonUnavailable, .invalidContent, .noProgress, .limitExceeded, .timedOut, .selectionChanged, .accessibilityError(-25204)]

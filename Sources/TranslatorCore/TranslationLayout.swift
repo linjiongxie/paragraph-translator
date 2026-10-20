@@ -4,8 +4,15 @@ struct TranslationLayout {
     let paragraphs: [String]
     private let lines: [String]
     private let separators: [String]
-    private let translatedIndices: [Int]
-    private let prefixes: [String]
+    private let units: [Unit]
+    private let tables: [MarkdownTable.Table]
+
+    private struct Unit {
+        let line: Int
+        let prefix: String
+        let cellRange: NSRange?
+        let tableIndex: Int?
+    }
 
     static let responseSchema = Data(#"{"type":"object","properties":{"translations":{"type":"array","items":{"type":"string"}}},"required":["translations"],"additionalProperties":false}"#.utf8)
 
@@ -23,32 +30,57 @@ struct TranslationLayout {
         lines.append(original.substring(from: position))
         self.lines = lines
         self.separators = separators
-        translatedIndices = lines.indices.filter { !lines[$0].trimmingCharacters(in: .whitespaces).isEmpty }
-        let prefixPattern = try! NSRegularExpression(pattern: "^[ \\t]*(?:(?:#{1,6}|[-+*•]|\\d+[.)]|>+)[ \\t]+)?")
-        let linePrefixes = lines.map { line in
-            guard let match = prefixPattern.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) else { return "" }
-            return (line as NSString).substring(with: match.range)
+        let tables = MarkdownTable.tables(in: lines)
+        self.tables = tables
+        var tableAtLine: [Int: Int] = [:]
+        var rowAtLine: [Int: MarkdownTable.Row] = [:]
+        for (tableIndex, table) in tables.enumerated() {
+            for line in table.sourceLines { tableAtLine[line] = tableIndex }
+            for row in [table.header] + table.rows { rowAtLine[row.sourceLine] = row }
         }
-        prefixes = linePrefixes
-        paragraphs = translatedIndices.map { index in String(lines[index].dropFirst(linePrefixes[index].count)) }
+        let prefixPattern = try! NSRegularExpression(pattern: "^[ \\t]*(?:(?:#{1,6}|[-+*•]|\\d+[.)]|>+)[ \\t]+)?")
+        var units: [Unit] = []
+        var paragraphs: [String] = []
+        for index in lines.indices {
+            if let tableIndex = tableAtLine[index] {
+                guard let row = rowAtLine[index] else { continue }
+                for cell in row.cells where Self.needsCellTranslation(cell) {
+                    units.append(Unit(line: index, prefix: "", cellRange: cell.sourceRange, tableIndex: tableIndex))
+                    paragraphs.append(cell.markdown)
+                }
+            } else if !lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
+                let match = prefixPattern.firstMatch(in: lines[index], range: NSRange(lines[index].startIndex..., in: lines[index]))
+                let prefix = match.map { (lines[index] as NSString).substring(with: $0.range) } ?? ""
+                units.append(Unit(line: index, prefix: prefix, cellRange: nil, tableIndex: nil))
+                paragraphs.append(String(lines[index].dropFirst(prefix.count)))
+            }
+        }
+        self.units = units
+        self.paragraphs = paragraphs
     }
 
     func render(response: String) throws -> String {
         struct Response: Decodable { let translations: [String] }
         guard let decoded = try? JSONDecoder().decode(Response.self, from: Data(response.utf8)),
-              decoded.translations.count == translatedIndices.count else {
+              decoded.translations.count == units.count else {
             throw CodexTranslatorError.invalidParagraphLayout
         }
-        var result = lines
-        for (position, pair) in zip(translatedIndices, decoded.translations).enumerated() {
-            let (index, rawTranslation) = pair
-            let translation = rawTranslation.trimmingCharacters(in: .whitespacesAndNewlines)
+        let translations = decoded.translations.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        for (position, translation) in translations.enumerated() {
             guard !translation.isEmpty, translation.rangeOfCharacter(from: .newlines) == nil,
                   inlineFormat(translation) == inlineFormat(paragraphs[position]) else {
                 throw CodexTranslatorError.invalidParagraphLayout
             }
-            result[index] = prefixes[index] + translation
+            if units[position].cellRange != nil {
+                guard Self.isSafeTableCell(translation),
+                      Self.numbers(in: translation) == Self.numbers(in: paragraphs[position]),
+                      MarkdownTable.inlineBreakCount(in: translation) == MarkdownTable.inlineBreakCount(in: paragraphs[position]) else {
+                    throw CodexTranslatorError.invalidParagraphLayout
+                }
+            }
         }
+        let result = renderedLines(translations: translations, through: lines.count - 1, blankPendingCells: false)
+        guard hasOriginalTableStructure(result) else { throw CodexTranslatorError.invalidParagraphLayout }
         return result.enumerated().map { index, line in
             line + (index < separators.count ? separators[index] : "")
         }.joined()
@@ -57,7 +89,7 @@ struct TranslationLayout {
     /// A temporary preview of a syntactically valid JSON prefix. Inline Markdown
     /// can still be unfinished; callers must use `render` before accepting a result.
     func renderPartial(response: String) -> String? {
-        var parser = PartialTranslationResponse(response, maximumItems: translatedIndices.count)
+        var parser = PartialTranslationResponse(response, maximumItems: units.count)
         guard let preview = parser.parse() else { return nil }
         if preview.isComplete { return try? render(response: response) }
 
@@ -67,14 +99,92 @@ struct TranslationLayout {
         guard !translations.isEmpty,
               translations.allSatisfy({ !$0.isEmpty && $0.rangeOfCharacter(from: .newlines) == nil }) else { return nil }
 
-        let lastLine = translatedIndices[translations.count - 1]
-        var result = Array(lines[...lastLine])
-        for (index, translation) in zip(translatedIndices, translations) {
-            result[index] = prefixes[index] + translation
+        for (unit, translation) in zip(units, translations) where unit.cellRange != nil {
+            guard Self.isSafeTableCell(translation) else { return nil }
         }
+        let lastUnit = units[translations.count - 1]
+        // A table needs its delimiter row from the first cell onward. Keep its
+        // shape stable while later cells stream, without exposing source text.
+        let lastLine = lastUnit.tableIndex.map { tables[$0].sourceLines.upperBound - 1 } ?? lastUnit.line
+        let result = renderedLines(translations: translations, through: lastLine, blankPendingCells: true)
+        guard hasOriginalTableStructure(result) else { return nil }
         return result.enumerated().map { index, line in
             line + (index < lastLine ? separators[index] : "")
         }.joined()
+    }
+
+    private func renderedLines(translations: [String], through lastLine: Int, blankPendingCells: Bool) -> [String] {
+        var result = Array(lines[...lastLine])
+        var cellReplacements: [Int: [(NSRange, String)]] = [:]
+        for (position, unit) in units.enumerated() where unit.line <= lastLine {
+            if let range = unit.cellRange {
+                if position < translations.count {
+                    cellReplacements[unit.line, default: []].append((range, translations[position]))
+                } else if blankPendingCells {
+                    cellReplacements[unit.line, default: []].append((range, ""))
+                }
+            } else if position < translations.count {
+                result[unit.line] = unit.prefix + translations[position]
+            }
+        }
+        for (line, replacements) in cellReplacements {
+            let mutable = NSMutableString(string: result[line])
+            for (range, translation) in replacements.sorted(by: { $0.0.location > $1.0.location }) {
+                mutable.replaceCharacters(in: range, with: translation)
+            }
+            result[line] = mutable as String
+        }
+        if blankPendingCells {
+            for table in tables where table.sourceLines.lowerBound <= lastLine {
+                for row in [table.header] + table.rows where row.sourceLine <= lastLine {
+                    let line = row.sourceLine
+                    guard result[line].trimmingCharacters(in: .whitespaces).isEmpty
+                            || MarkdownTable.row(from: result[line]).cells.count != row.cells.count,
+                          let first = row.cells.first, let last = row.cells.last else { continue }
+                    // Without an outer pipe, a pending boundary cell can look
+                    // like missing framing or an empty line. Add preview-only
+                    // framing; the final copy keeps the original row exactly.
+                    let original = row.source as NSString
+                    if !original.substring(to: first.sourceRange.location).contains("|") { result[line] = "|" + result[line] }
+                    if !original.substring(from: NSMaxRange(last.sourceRange)).contains("|") { result[line] += "|" }
+                }
+            }
+        }
+        return result
+    }
+
+    private func hasOriginalTableStructure(_ renderedLines: [String]) -> Bool {
+        for table in tables where table.sourceLines.lowerBound < renderedLines.count {
+            guard let rendered = MarkdownTable.parse(lines: renderedLines, startingAt: table.sourceLines.lowerBound),
+                  rendered.sourceLines == table.sourceLines,
+                  rendered.columnCount == table.columnCount,
+                  rendered.rows.map({ $0.cells.count }) == table.rows.map({ $0.cells.count }) else { return false }
+        }
+        return true
+    }
+
+    private static func needsCellTranslation(_ cell: MarkdownTable.Cell) -> Bool {
+        // Empty cells and numeric values are structural data. Keeping them
+        // outside the response avoids both needless work and changed results.
+        String(cell.content.characters).rangeOfCharacter(from: .letters) != nil
+    }
+
+    private static func isSafeTableCell(_ text: String) -> Bool {
+        var escaped = false
+        for character in text {
+            if character == "|", !escaped { return false }
+            if character == "\\" { escaped.toggle() } else { escaped = false }
+        }
+        // A trailing escape could consume the fixed closing cell delimiter.
+        return !escaped
+    }
+
+    private static func numbers(in text: String) -> [String] {
+        let pattern = try! NSRegularExpression(pattern: #"[-+−]?\d+(?:[.,]\d+)*(?:[ \t]*(?:%|‰))?"#)
+        let original = text as NSString
+        return pattern.matches(in: text, range: NSRange(location: 0, length: original.length)).map {
+            original.substring(with: $0.range).filter { $0 != " " && $0 != "\t" }
+        }
     }
 
     private struct InlineFormat: Equatable {

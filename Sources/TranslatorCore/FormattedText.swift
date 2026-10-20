@@ -1,6 +1,11 @@
 import Foundation
 
 public enum FormattedText {
+    public enum Block {
+        case line(Line)
+        case table(MarkdownTable.Table)
+    }
+
     public struct Line {
         public let content: AttributedString
         public let headingLevel: Int?
@@ -11,38 +16,69 @@ public enum FormattedText {
     }
 
     public static func lines(from text: String) -> [Line] {
-        let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-            .replacingOccurrences(of: "\u{2028}", with: "\n")
-            .replacingOccurrences(of: "\u{2029}", with: "\n")
         var blankLines = 0
         var result: [Line] = []
-        for raw in normalized.components(separatedBy: "\n") {
+        for raw in normalizedLines(text) {
             if raw.trimmingCharacters(in: .whitespaces).isEmpty {
                 blankLines += 1
                 continue
             }
-            let indentationText = String(raw.prefix { $0 == " " || $0 == "\t" })
-            let indentation = indentationText.replacingOccurrences(of: "\t", with: "    ").count
-            var body = String(raw.dropFirst(indentationText.count))
-            var heading: Int?
-            var marker: String?
-            if let matched = match("^(#{1,6})[ \\t]+(.*)$", body) {
-                heading = matched[0].count
-                body = matched[1]
-            } else if let matched = match("^([-+*•])[ \\t]+(.*)$", body) {
-                marker = "•"
-                body = matched[1]
-            } else if let matched = match("^(\\d+[.)])[ \\t]+(.*)$", body) {
-                marker = matched[0]
-                body = matched[1]
-            }
-            let attributed = inline(from: body)
-            result.append(Line(content: attributed, headingLevel: heading, marker: marker,
-                               indentation: indentation, blankLinesBefore: blankLines))
+            result.append(line(from: raw, blankLinesBefore: blankLines))
             blankLines = 0
         }
         return result
+    }
+
+    public static func blocks(from text: String) -> [Block] {
+        let source = normalizedLines(text)
+        let tables = Dictionary(uniqueKeysWithValues: MarkdownTable.tables(in: source).map { ($0.sourceLines.lowerBound, $0) })
+        var result: [Block] = []
+        var index = 0
+        var blankLines = 0
+        while index < source.count {
+            if let table = tables[index] {
+                result.append(.table(table))
+                index = table.sourceLines.upperBound
+                blankLines = 0
+            } else if source[index].trimmingCharacters(in: .whitespaces).isEmpty {
+                blankLines += 1
+                index += 1
+            } else {
+                result.append(.line(line(from: source[index], blankLinesBefore: blankLines)))
+                index += 1
+                blankLines = 0
+            }
+        }
+        return result
+    }
+
+    private static func normalizedLines(_ text: String) -> [String] {
+        text.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\u{2028}", with: "\n")
+            .replacingOccurrences(of: "\u{2029}", with: "\n")
+            .components(separatedBy: "\n")
+    }
+
+    private static func line(from raw: String, blankLinesBefore: Int) -> Line {
+        let indentationText = String(raw.prefix { $0 == " " || $0 == "\t" })
+        let indentation = indentationText.replacingOccurrences(of: "\t", with: "    ").count
+        var body = String(raw.dropFirst(indentationText.count))
+        var heading: Int?
+        var marker: String?
+        if let matched = match("^(#{1,6})[ \\t]+(.*)$", body) {
+            heading = matched[0].count
+            body = matched[1]
+        } else if let matched = match("^([-+*•])[ \\t]+(.*)$", body) {
+            marker = "•"
+            body = matched[1]
+        } else if let matched = match("^(\\d+[.)])[ \\t]+(.*)$", body) {
+            marker = matched[0]
+            body = matched[1]
+        }
+        let attributed = inline(from: body)
+        return Line(content: attributed, headingLevel: heading, marker: marker,
+                    indentation: indentation, blankLinesBefore: blankLinesBefore)
     }
 
     static func inline(from text: String) -> AttributedString {

@@ -40,13 +40,13 @@ brew upgrade --cask codex
 
 ## 2. 下载并打开应用
 
-首发预览版本为 **`v0.1.0-preview`**，下载文件为：
+当前预览版本为 **`v0.1.1-preview`**，下载文件为：
 
 ```text
-paragraph-translator-0.1.0-macos-arm64.zip
+paragraph-translator-0.1.1-macos-arm64.zip
 ```
 
-从 [GitHub Releases](https://github.com/linjiongxie/paragraph-translator/releases) 或 [v0.1.0-preview 发布页](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.0-preview) 下载。GitHub 的 [latest 链接](https://github.com/linjiongxie/paragraph-translator/releases/latest) 通常指向正式版；只有预览版时，请使用前面的 Releases 列表。
+从 [GitHub Releases](https://github.com/linjiongxie/paragraph-translator/releases) 或 [v0.1.1-preview 发布页](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.1-preview) 下载。GitHub 的 [latest 链接](https://github.com/linjiongxie/paragraph-translator/releases/latest) 通常指向正式版；只有预览版时，请使用前面的 Releases 列表。
 
 1. 解压 ZIP，将 **“段落翻译.app”拖入“应用程序”（`/Applications`）**。
 2. 从“应用程序”打开“段落翻译”。启动后，顶部菜单栏会出现对话气泡图标；这是菜单栏工具，没有常驻 Dock 图标。
@@ -64,6 +64,14 @@ paragraph-translator-0.1.0-macos-arm64.zip
 工具只在你触发后读取选区；正常取词不会模拟复制或覆盖剪贴板。段落、列表和强调格式取决于来源应用提供的信息。无法读取排版时会提示回退到纯文本；扫描 PDF、图片和不暴露选中文字的界面暂不支持。
 
 **不想授予跨应用读取权限，也可以使用手工输入：** 点击菜单栏图标 → **“输入或粘贴英文…”**，输入或粘贴英文后翻译。这个入口无需辅助功能权限，但仍需要 Codex 登录、模型权限和网络连接。
+
+### Markdown 表格与窗口缩放
+
+从 **`v0.1.1-preview`** 起支持 Markdown 表格（旧版 `v0.1.0-preview` 不包含此功能）。可通过手工输入入口粘贴 Markdown 表格；需要有表头和 `| --- |` 分隔行。译文逐单元格出现，未翻译的单元格暂时留空，数字、行列和对齐由程序保留。宽表格可横向滚动。
+
+跨应用取表需要来源应用提供辅助功能表格与单元格信息。请完整选中一张普通、没有合并单元格的表格，再按 ⌥⌘T；已完成一个 Claude 整表来源的独立捕获验证，兼容性仍取决于来源应用。只选部分表格、存在合并单元格或无法读取表格元数据时，会回退到纯文本并提示；可改用手工粘贴原始 Markdown。
+
+表格较大时，可拖动窗口边缘或右下角斜线手柄放大，译文区域会随窗口伸缩；手柄悬停时显示缩放光标和“拖动调整窗口大小”提示。缩小后仍可滚动查看内容。窗口设有最小尺寸，避免按钮被挤掉。同一次运行中，关闭浮窗再打开会保留调整后的尺寸。
 
 ## 常见问题
 

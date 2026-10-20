@@ -4,6 +4,17 @@ import Darwin
 @testable import TranslatorCore
 
 final class CodexTranslatorTests: XCTestCase {
+    func testNumericTableReturnsUnchangedWithoutLaunchingCodex() async throws {
+        let unavailable = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = "|  | 10 |\n| --- | ---: |\n|  | 57% |\n| -3.5 | 3 / 4 |"
+        let updates = Updates()
+        let result = try await CodexTranslator(executableURL: unavailable).translate(source) {
+            updates.append($0, beforeCompletion: true)
+        }
+        XCTAssertEqual(result, source)
+        XCTAssertEqual(updates.values.last, source)
+    }
+
     func testStreamsRealRPCDeltasBeforeTurnCompletionAcrossUTF8Chunks() async throws {
         let fixture = try Fixture(body: """
         encoded = json.dumps({'translations': ['你好，世界。', '第二段。']}, ensure_ascii=False, separators=(',', ':'))

@@ -74,8 +74,13 @@ struct TranslationCard: View {
             }
         }
         .padding(24)
-        .frame(width: 480, height: 530)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(.regularMaterial)
+        .overlay(alignment: .bottomTrailing) {
+            WindowResizeHandle()
+                .frame(width: 22, height: 22)
+                .padding(2)
+        }
     }
 
     private var editor: some View {
