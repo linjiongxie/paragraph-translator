@@ -74,6 +74,7 @@ final class TranslationModel: ObservableObject {
     @Published var copied = false
     @Published var shortcutMessage = "⌥⌘T 翻译选中内容"
     @Published var captureWarning = ""
+    @Published var captureDiagnostics = ""
 
     private let translator = CodexTranslator()
     private var task: Task<Void, Never>?
@@ -90,6 +91,7 @@ final class TranslationModel: ObservableObject {
         }
         source = passage
         self.captureWarning = captureWarning
+        captureDiagnostics = ""
         translation = ""
         message = ""
         copied = false
@@ -153,15 +155,17 @@ final class TranslationModel: ObservableObject {
         message = ""
         phase = .ready
         captureWarning = ""
+        captureDiagnostics = ""
     }
 
-    func showError(_ error: String) {
+    func showError(_ error: String, captureDiagnostics: String = "") {
         cancel()
         source = ""
         translation = ""
         copied = false
         captureWarning = ""
         message = error
+        self.captureDiagnostics = captureDiagnostics
         phase = .failed
     }
 
@@ -266,7 +270,7 @@ final class TranslatorAppDelegate: NSObject, NSApplicationDelegate, NSWindowDele
             model.translate(passage.text, captureWarning: passage.plainFallback ? "未能读取原文排版，本次仅翻译纯文本。" : "")
         } catch {
             model.accessibilityGranted = selection.hasAccessibilityAccess
-            model.showError(error.localizedDescription)
+            model.showError(error.localizedDescription, captureDiagnostics: selection.diagnostics)
             showPanel(near: nil)
         }
     }

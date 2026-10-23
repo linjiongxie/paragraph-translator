@@ -1,8 +1,8 @@
 # 验证记录
 
-日期：2026-10-20。已验收环境：Apple Silicon、macOS 27.0、Codex CLI `0.163.0-alpha.10.2`，ChatGPT 登录。
+首轮验收日期：2026-10-20。已验收环境：Apple Silicon、macOS 27.0、Codex CLI `0.163.0-alpha.10.2`，ChatGPT 登录。终端选区及 v0.1.2 发布检查记录于 2026-10-23。
 
-下方分别记录已发布的 `v0.1.0-preview` 与 `v0.1.1-preview`。表格翻译和窗口缩放从 `v0.1.1-preview` 起进入下载包；本机功能验收与发布包检查分别说明。
+下方按 `v0.1.0-preview`、`v0.1.1-preview`、`v0.1.2-preview` 记录。表格翻译和窗口缩放从 `v0.1.1-preview` 起进入下载包；终端原生选区路径与失败诊断从 `v0.1.2-preview` 起加入。本机功能验收与发布包检查分别说明。
 
 ## 首发预览版 v0.1.0-preview
 
@@ -57,3 +57,20 @@
 - 尚无 Developer ID 签名、公证、自动更新、App Store 发行或系统三指手势接管。
 
 公开样例均为中性文字，不包含原业务对话或实验数据。
+
+## v0.1.2-preview · 终端选区（2026-10-23）
+
+- 为 macOS 自带 Terminal 增加有范围和时间限制的选区读取路径；只读取明确的选区或选区范围，不读取整个终端缓冲区。终端夹具 60 个检查、网页选区夹具 81 个检查通过；核心测试 83 项通过。release 构建及严格签名检查通过。
+- 用户在 Terminal 内的 Claude Code 对话中实际拖选，分别通过真实 ⌥⌘T 和菜单“翻译选中内容”触发，两种方式均失败。失败诊断确认授权有效、前台应用及焦点窗口一致，焦点为 `AXTextArea`；`AXSelectedText` 返回空字符串，`AXSelectedTextRange` 稳定返回零长度。这证明当前接口没有提供选中文字，不能将夹具通过视为实际兼容通过。
+- 失败浮窗可展开仅含接口状态、节点类型、选区范围和字符数的诊断。诊断不含正文、窗口标题或文件路径，不写入文件，也不发送给翻译模型。
+- 用户关闭 Terminal 的“允许鼠标报告”后，确认双击选中的文字可以翻译，但普通整段拖选仍报无选区；随后改为 Fn 拖选、松开鼠标及 Fn，再实际按 ⌥⌘T，用户确认“Fn 拖选后整段翻译成功”。两次测试之间没有重编译、重启或重新授权翻译 App。
+- 完成依据为用户实际操作回报；后续工具读取时浮窗已回到手工输入页，未捕获这次成功译文的截图或计时。此证据仅覆盖当前 Terminal／Claude Code 场景、关闭鼠标报告后的 Fn 拖选；不代表普通拖选、其他终端或重新开启鼠标报告后的行为都已验收。
+- [Claude Code 官方文档](https://code.claude.com/docs/en/fullscreen#keep-native-text-selection) 说明全屏界面的自绘选区不进入终端选区缓冲区，Apple Terminal 的原生拖选修饰键为 Fn。本机空选区诊断与 Fn 拖选成功的对照支持这一原因；增加容器遍历本身没有解决原问题。另参考 [Claude Code 同类问题报告](https://github.com/anthropics/claude-code/issues/70512) 和 [Apple 鼠标报告说明](https://support.apple.com/zh-cn/guide/terminal/trmlc69728a5/mac)。
+
+## v0.1.2-preview · 发布包检查（2026-10-23）
+
+- 发布前重新运行 `swift test`：83 项通过、0 失败；终端选区夹具 60 个检查、网页选区夹具 81 个检查通过。独立代码复核未发现阻断问题，`git diff --check` 通过。
+- 单独构建版本 0.1.2（build 3）、arm64 发布包。解压后严格签名校验、可执行权限和纯数字 Markdown 表格 CLI 冒烟检查通过；该冒烟检查无需模型请求。
+- ZIP 内安装说明与提交的文件一致，排除了扩展属性、Finder 缓存及 resource forks。源码与文档共 40 个文件，以及最终 ZIP 的隐私扫描均未检出所检查的私人身份、业务内容、用户目录和凭据模式。
+- 文件：`paragraph-translator-0.1.2-macos-arm64.zip`，306554 字节；SHA-256：`562c9eb9d42d69b38d8da4ddf6710c1747dca14b5c781e991b96444b5cd88e70`。
+- 本机已授权 App 的可执行文件与 Info.plist 哈希在构建、打包后保持一致。发布包没有替换本机 App；新版下载包的跨应用授权仍需每位使用者在自己的 Mac 上完成。

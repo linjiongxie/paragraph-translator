@@ -21,6 +21,9 @@ enum SelectionError: LocalizedError {
     case noSelection
     case unsupportedApplication
     case applicationUnavailable
+    case selectionChanged
+    case ambiguousSelection
+    case terminalSelectionLimit
 
     var errorDescription: String? {
         switch self {
@@ -32,12 +35,25 @@ enum SelectionError: LocalizedError {
             return "当前应用没有通过辅助功能提供选中文字，暂时无法读取这处选区。"
         case .applicationUnavailable:
             return "暂时无法读取来源应用。请回到来源应用，重新选中文字后再试。"
+        case .selectionChanged:
+            return "读取期间焦点或选区发生了变化。请回到来源应用，重新选中文字后再试。"
+        case .ambiguousSelection:
+            return "终端中有多处文字选区。请在当前终端区域重新选中文字后再试。"
+        case .terminalSelectionLimit:
+            return "终端选区较大或窗口结构复杂，请缩小选区后重试；也可复制后使用菜单栏的剪贴板翻译。"
         }
     }
 }
 
 @MainActor
 final class SelectionReader {
+    private(set) var diagnostics = ""
+
+    private func record(_ line: String) {
+        guard diagnostics.utf8.count < 12_000 else { return }
+        diagnostics += line + "\n"
+    }
+
     var hasAccessibilityAccess: Bool { AXIsProcessTrusted() }
 
     func requestAccessibilityAccess() {
@@ -48,6 +64,10 @@ final class SelectionReader {
     /// Call before activating our application or showing a panel: both the text
     /// and its position belong to the currently focused source application.
     func readSelection() throws -> SelectedPassage {
+        diagnostics = ""
+        let started = ProcessInfo.processInfo.systemUptime
+        defer { record("elapsedMs=\(Int((ProcessInfo.processInfo.systemUptime - started) * 1_000))") }
+        record("accessibility=\(hasAccessibilityAccess)")
         guard hasAccessibilityAccess else {
             throw SelectionError.accessibilityNotAuthorized
         }
@@ -63,6 +83,15 @@ final class SelectionReader {
         }
 
         var element = focusedValue as! AXUIElement
+        var processID: pid_t = 0
+        let pidStatus = AXUIElementGetPid(element, &processID)
+        let bundle = NSRunningApplication(processIdentifier: processID)?.bundleIdentifier
+        record("source=\(bundle ?? "unknown") pidStatus=\(pidStatus.rawValue)")
+        if pidStatus == .success, bundle == "com.apple.Terminal" {
+            record("route=terminal")
+            return try readTerminalSelection(focused: element, processID: processID)
+        }
+        record("route=generic")
         var visited: [AXUIElement] = []
         var supportsSelection = false
         let webReader = WebSelectionReader()
@@ -73,7 +102,7 @@ final class SelectionReader {
         // Inspect only that element, its bounded parent chain, and explicit
         // selected marker intervals. Never read the document value, traverse
         // document children, or copy to the clipboard.
-        for _ in 0..<8 {
+        for depth in 0..<8 {
             guard !visited.contains(where: { CFEqual($0, element) }) else { break }
             visited.append(element)
             AXUIElementSetMessagingTimeout(element, 0.1)
@@ -88,6 +117,7 @@ final class SelectionReader {
                 throw error
             }
             let range = try? attribute(kAXSelectedTextRangeAttribute as CFString, of: element)
+            record("ancestor=\(depth) textStatus=\(selected.error.rawValue) selectedUTF16=\((selected.value as? String)?.utf16.count ?? -1) rangeStatus=\(range?.error.rawValue ?? -1)")
             supportsSelection = supportsSelection
                 || selected.error == .success || selected.error == .noValue
                 || range?.error == .success || range?.error == .noValue
@@ -105,6 +135,7 @@ final class SelectionReader {
                 let markdown = try webReader.read(from: element, expectedText: fallback?.text)
                 return SelectedPassage(text: markdown, bounds: fallback?.bounds)
             } catch let failure as WebSelectionFailure {
+                record("webFailure=\(failure)")
                 if failure != .unsupported {
                     supportsSelection = true
                     formatFailure = failure
@@ -137,6 +168,31 @@ final class SelectionReader {
         throw supportsSelection
             ? SelectionError.noSelection
             : SelectionError.unsupportedApplication
+    }
+
+    private func readTerminalSelection(focused: AXUIElement, processID: pid_t) throws -> SelectedPassage {
+        do {
+            let source = try AccessibilityTerminalSelectionSource(focused: focused, processID: processID) { self.record($0) }
+            let selected = try TerminalSelectionTraversal.capture(source: source)
+            let element = source.element(for: selected.element)
+            var bounds: CGRect?
+            if let range = selected.range {
+                var characters = CFRange(location: range.location, length: range.length)
+                if let value = AXValueCreate(.cfRange, &characters) {
+                    bounds = try? selectionBounds(value, in: element)
+                }
+            }
+            return SelectedPassage(text: selected.text, bounds: bounds)
+        } catch let failure as TerminalSelectionFailure {
+            record("terminalFailure=\(failure)")
+            switch failure {
+            case .selectionChanged: throw SelectionError.selectionChanged
+            case .ambiguousSelection: throw SelectionError.ambiguousSelection
+            case .limitExceeded: throw SelectionError.terminalSelectionLimit
+            case .timedOut: throw SelectionError.applicationUnavailable
+            default: throw SelectionError.noSelection
+            }
+        }
     }
 
     private func attribute(

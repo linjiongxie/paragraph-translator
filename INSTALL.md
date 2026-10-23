@@ -40,13 +40,13 @@ brew upgrade --cask codex
 
 ## 2. 下载并打开应用
 
-当前预览版本为 **`v0.1.1-preview`**，下载文件为：
+当前预览版本为 **`v0.1.2-preview`**，下载文件为：
 
 ```text
-paragraph-translator-0.1.1-macos-arm64.zip
+paragraph-translator-0.1.2-macos-arm64.zip
 ```
 
-从 [GitHub Releases](https://github.com/linjiongxie/paragraph-translator/releases) 或 [v0.1.1-preview 发布页](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.1-preview) 下载。GitHub 的 [latest 链接](https://github.com/linjiongxie/paragraph-translator/releases/latest) 通常指向正式版；只有预览版时，请使用前面的 Releases 列表。
+从 [GitHub Releases](https://github.com/linjiongxie/paragraph-translator/releases) 或 [v0.1.2-preview 发布页](https://github.com/linjiongxie/paragraph-translator/releases/tag/v0.1.2-preview) 下载。GitHub 的 [latest 链接](https://github.com/linjiongxie/paragraph-translator/releases/latest) 通常指向正式版；只有预览版时，请使用前面的 Releases 列表。
 
 1. 解压 ZIP，将 **“段落翻译.app”拖入“应用程序”（`/Applications`）**。
 2. 从“应用程序”打开“段落翻译”。启动后，顶部菜单栏会出现对话气泡图标；这是菜单栏工具，没有常驻 Dock 图标。
@@ -114,6 +114,18 @@ codex --version
 
 辅助功能权限说明：[Apple：允许辅助功能 App 访问 Mac](https://support.apple.com/en-euro/guide/mac-help/mh43185/mac)。
 
+### Terminal 内的 Claude Code：有高亮却读不到
+
+Claude Code 全屏界面的普通拖选可能由 Claude Code 自己处理，没有进入终端的系统选区；这种高亮无法通过本工具使用的辅助功能选区接口读取。请先使用终端原生选区：
+
+- macOS 自带 Terminal：按住 **Fn（🌐）** 拖选英文，松开鼠标和 Fn 后，再按 **⌥⌘T**。
+- iTerm2：官方文档给出的原生拖选修饰键为 **Option**；本工具尚未完成 iTerm2 实机验收。
+- 需要保留 Claude Code 自身选取方式时，可明确复制所选文字，然后点菜单栏 **“翻译剪贴板中的英文”**。本工具不会在取词失败后自动读取旧剪贴板。
+
+原生拖选方式来自 [Claude Code 官方文档](https://code.claude.com/docs/en/fullscreen#keep-native-text-selection)。2026-10-23 本机实际操作确认 **Fn 拖选后可通过 ⌥⌘T 整段翻译**；此次测试中 Terminal 的“允许鼠标报告”处于关闭状态，其他配置和版本仍需验证。仅关闭“显示 → 允许鼠标报告”时，双击选词可用但普通整段拖选仍失败，因此关键使用方式是 Fn 拖选。关闭鼠标报告还会影响 Claude Code 的鼠标交互。
+
+终端选区按纯文本读取；Claude Code 用线条字符画出的表格不会自动转为 Markdown 表格。若需要保留表格网格，请复制原始 Markdown 表格后通过手工输入入口翻译。
+
 ## 从源码构建
 
 需要 macOS、Swift 6 或更高版本，以及提供 macOS 26 新辅助功能常量的 SDK。建议安装最新稳定版 Xcode 或相应 Command Line Tools。应用运行的最低系统声明与构建所需 SDK 是两回事；旧 SDK 即使支持 Swift 6，也可能无法识别源码中的新常量。
@@ -125,6 +137,7 @@ swift --version
 xcrun --show-sdk-path
 swift test
 bash scripts/test-web-selection.sh
+bash scripts/test-terminal-selection.sh
 bash scripts/build-app.sh
 ```
 

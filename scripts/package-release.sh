@@ -2,7 +2,7 @@
 set -euo pipefail
 
 release_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-release_version="${1:-0.1.1}"
+release_version="${1:-0.1.2}"
 if [[ ! "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   printf '版本必须采用 0.1.0 格式。\n' >&2
   exit 1

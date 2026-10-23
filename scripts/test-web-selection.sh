@@ -9,6 +9,8 @@ trap 'rm -rf -- "$capture_test_dir"' EXIT
 
 xcrun swiftc -swift-version 5 \
   "$capture_repo_root/Sources/ParagraphTranslator/SelectionReader.swift" \
+  "$capture_repo_root/Sources/ParagraphTranslator/TerminalSelectionTraversal.swift" \
+  "$capture_repo_root/Sources/ParagraphTranslator/TerminalSelectionReader.swift" \
   "$capture_repo_root/Sources/ParagraphTranslator/WebSelectionReader.swift" \
   "$capture_repo_root/Tests/SelectionCaptureFixtures/TraversalTests.swift" \
   -o "$capture_test_dir/tests"

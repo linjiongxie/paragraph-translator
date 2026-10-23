@@ -157,6 +157,18 @@ struct TranslationCard: View {
                     Button("重试") { model.translate(model.source, captureWarning: model.captureWarning) }.buttonStyle(.bordered)
                 }
                 Button("输入或粘贴英文", action: onEdit).buttonStyle(.plain).foregroundStyle(accent)
+                if !model.captureDiagnostics.isEmpty {
+                    DisclosureGroup("取词诊断（不含正文）") {
+                        ScrollView {
+                            Text(model.captureDiagnostics)
+                                .font(.system(size: 10, design: .monospaced))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .textSelection(.enabled)
+                        }
+                        .frame(maxHeight: 150)
+                    }
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         case .ready:
